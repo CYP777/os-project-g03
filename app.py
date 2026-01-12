@@ -19,7 +19,6 @@ CLIENT_SECRET = "2697b8caca0845488ce84a714f705d52"
 REDIRECT_URI = "http://127.0.0.1:8000/callback"
 
 # --- Spotify Setup ---
-# Initialize Spotify client with specific scopes for reading playback info
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
@@ -30,14 +29,11 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 ))
 
 def init_db():
-    """
-    Initializes the SQLite database.
-    Creates tables if they don't exist and migrates old data.
-    """
+    """Initializes the SQLite database with a new table for real-time tracking."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Table 1: Simple logs for RFID scans
+    # Table 1: RFID Logs (Raw scan logs)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS rfid_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +41,7 @@ def init_db():
         )
     ''')
 
-    # Table 2: Detailed playback history for statistics
+    # Table 2: Playback History (Stores track names for "Top Tracks" stats)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS play_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +52,16 @@ def init_db():
         )
     ''')
 
-    # Table 3: Dynamic Card Mapping (Managable via Web UI)
+    # --- New Table: Real Listening Duration (Stores actual listening time) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS playback_duration (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            duration_ms INTEGER,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Table 3: Card Mapping
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS rfid_cards (
             card_id INTEGER PRIMARY KEY,
@@ -68,15 +73,10 @@ def init_db():
 
     conn.commit()
     conn.close()
-
-    # Run migration only once to save old hardcoded data
     seed_data()
 
 def seed_data():
-    """
-    Migrates hardcoded dictionary to database for the first run.
-    This ensures you don't lose your previous card setup.
-    """
+    """Seeds initial data if the card table is empty."""
     # Hardcoded map from previous version
     OLD_MAP = {
         71526473880:  ("CMD", "PAUSE", "Pause Command"),
@@ -91,41 +91,31 @@ def seed_data():
         428280338173: ("CONTEXT", "spotify:playlist:3zACSOuS7cj5TOROIHrAVc", "Playlist: 3zACS..."),
         427966223959: ("CONTEXT", "spotify:playlist:18BmB9NtcZua885Q8hQvcb", "Playlist: 18BmB...")
     }
-
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
-    # Check if the table is empty
     cursor.execute('SELECT count(*) FROM rfid_cards')
     if cursor.fetchone()[0] == 0:
-        print("Migrating old CARD_MAP to Database...")
         for card_id, val in OLD_MAP.items():
-            # Insert data (Ignore if ID already exists)
             cursor.execute('INSERT OR IGNORE INTO rfid_cards (card_id, type, uri, name) VALUES (?, ?, ?, ?)',
                            (card_id, val[0], val[1], val[2]))
         conn.commit()
-
     conn.close()
 
-# Initialize Database on Startup
 init_db()
 
 # --- Routes ---
 
 @app.route('/')
 def index():
-    """Renders the main dashboard HTML."""
     return render_template('index.html')
 
 @app.route('/current-song')
 def get_current_song():
-    """API: Returns the currently playing song on Spotify."""
     try:
         current_track = sp.current_playback()
         if current_track and current_track['is_playing']:
             item = current_track['item']
             progress = (current_track['progress_ms'] / item['duration_ms']) * 100
-
             return jsonify({
                 'playing': True,
                 'title': item['name'],
@@ -139,18 +129,19 @@ def get_current_song():
 
 @app.route('/stats')
 def get_stats():
-    """API: Returns playback statistics for the dashboard."""
+    """API: Returns playback statistics."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
-        # 1. Calculate total listening time for today (in minutes)
+        # 1. Calculate Listening Time (Real Time)
+        # Fetch data from the new 'playback_duration' table
         today = datetime.now().strftime('%Y-%m-%d')
-        cursor.execute("SELECT SUM(duration_ms) FROM play_logs WHERE date(timestamp) = ?", (today,))
+        cursor.execute("SELECT SUM(duration_ms) FROM playback_duration WHERE date(timestamp) = ?", (today,))
         total_ms = cursor.fetchone()[0] or 0
         total_minutes = round(total_ms / 60000)
 
-        # 2. Get Top 5 most played tracks
+        # 2. Get Top Tracks (Still uses 'play_logs' as before)
         cursor.execute('''
             SELECT track_name, artist_name, COUNT(*) as count
             FROM play_logs
@@ -164,34 +155,24 @@ def get_stats():
     except Exception as e:
         return jsonify({'error': str(e)})
 
-# --- Card Management APIs (New Feature) ---
-
 @app.route('/api/cards', methods=['GET', 'POST'])
 def manage_cards():
-    """API: Handle fetching all cards (GET) and saving a card (POST)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     if request.method == 'POST':
-        # Save or Update a card
         data = request.json
-        # INSERT OR REPLACE allows updating existing IDs or creating new ones
         cursor.execute('INSERT OR REPLACE INTO rfid_cards (card_id, type, uri, name) VALUES (?, ?, ?, ?)',
                        (data['id'], data['type'], data['uri'], data['name']))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-
-    # GET: Retrieve all cards
     cursor.execute('SELECT * FROM rfid_cards')
-    # Convert list of tuples to list of dictionaries
     cards = [{'id': r[0], 'type': r[1], 'uri': r[2], 'name': r[3]} for r in cursor.fetchall()]
     conn.close()
     return jsonify(cards)
 
 @app.route('/api/cards/<int:card_id>', methods=['DELETE'])
 def delete_card(card_id):
-    """API: Delete a specific card by ID."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('DELETE FROM rfid_cards WHERE card_id = ?', (card_id,))
@@ -200,5 +181,4 @@ def delete_card(card_id):
     return jsonify({'success': True})
 
 if __name__ == '__main__':
-    # Run Flask on all interfaces (0.0.0.0) so it's accessible via Network
     app.run(host='0.0.0.0', port=5000)

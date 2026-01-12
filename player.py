@@ -17,7 +17,7 @@ CLIENT_SECRET = "Client_Secret_Here"
 REDIRECT_URI = "REDIRECT_URI_Here"
 
 def setup_spotify():
-    """Initializes Spotify Client with retry protection."""
+    """Initializes Spotify Client."""
     scope = "user-read-playback-state,user-modify-playback-state"
     auth_manager = SpotifyOAuth(
         client_id=CLIENT_ID,
@@ -27,11 +27,10 @@ def setup_spotify():
         open_browser=False,
         cache_path="/home/os/os-project-g03/.spotify_cache_player"
     )
-    # retries=0 prevents spamming API when errors occur
     return spotipy.Spotify(auth_manager=auth_manager, retries=0, requests_timeout=10)
 
 def wake_up_device(sp):
-    """Transfers playback to device to wake it up."""
+    """Wake up the device by transferring playback."""
     try:
         sp.transfer_playback(device_id=DEVICE_ID, force_play=False)
         time.sleep(0.5)
@@ -39,7 +38,7 @@ def wake_up_device(sp):
         pass
 
 def get_card_action(card_id):
-    """Queries the database for card actions."""
+    """Fetch card action from the database."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -47,30 +46,57 @@ def get_card_action(card_id):
         result = cursor.fetchone()
         conn.close()
         if result:
-            return result[0], result[1], result[2] # type, uri, name
+            return result[0], result[1], result[2]
         return None, None, None
     except Exception as e:
         print(f"Database Error: {e}")
         return None, None, None
 
-def log_playback(sp):
-    """Logs the current track to the database for stats."""
+def log_playback_history(sp):
+    """Logs track name to history (Only for 'Top Tracks' ranking)."""
     try:
-        sleep(1) # Wait for Spotify to update status
+        sleep(1)
         current = sp.current_playback()
         if current and current['item']:
             track = current['item']
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
+            # Only track name is logged here; duration is tracked by the monitor thread
             cursor.execute('''
                 INSERT INTO play_logs (track_name, artist_name, duration_ms)
                 VALUES (?, ?, ?)
             ''', (track['name'], track['artists'][0]['name'], track['duration_ms']))
             conn.commit()
             conn.close()
-            print(f"Logged: {track['name']}")
+            print(f"Logged History: {track['name']}")
     except Exception as e:
         print(f"Logging Error: {e}")
+
+# --- New Function: Real-time Duration Monitor (Background Worker) ---
+def monitor_listening_time(sp):
+    """Runs in the background to check playback status every 30 seconds."""
+    print("--- Time Monitor Started ---")
+    while True:
+        try:
+            # Check playback status
+            current = sp.current_playback()
+
+            # If music is currently playing
+            if current and current['is_playing']:
+                # Record 30 seconds (30000 ms) into the database
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute('INSERT INTO playback_duration (duration_ms) VALUES (?)', (30000,))
+                conn.commit()
+                conn.close()
+                # print("Recorded 30s of listening time...") # Uncomment for debugging
+
+            # Wait for 30 seconds before next check
+            time.sleep(30)
+
+        except Exception as e:
+            print(f"Monitor Error: {e}")
+            time.sleep(30) # Wait before retrying on error
 
 def main():
     reader = SimpleMFRC522()
@@ -82,51 +108,78 @@ def main():
 
     print(f"--- Player Started. Target: {DEVICE_ID} ---")
 
+    # --- Start Background Thread for Time Monitoring ---
+    # Separates time tracking from the main RFID reading loop
+    monitor_thread = threading.Thread(target=monitor_listening_time, args=(sp,))
+    monitor_thread.daemon = True # Daemon threads exit when the main program exits
+    monitor_thread.start()
+
     try:
         while True:
-            # 1. Read Card
+            # Main RFID Loop
             id, text = reader.read()
             print(f"Card ID Detected: {id}")
 
-            # 2. Get Action from Database
             action_type, uri, name = get_card_action(id)
 
             if action_type:
                 print(f"Action: {name}")
-
                 try:
-                    # Wake up speaker
                     wake_up_device(sp)
 
                     if action_type == "CMD":
-                        if uri == "PAUSE": sp.pause_playback(device_id=DEVICE_ID)
-                        elif uri == "NEXT": sp.next_track(device_id=DEVICE_ID)
-                        elif uri == "PREV": sp.previous_track(device_id=DEVICE_ID)
+                        if uri == "PAUSE":
+                            # Toggle Play/Pause Logic
+                            current = sp.current_playback()
+                            if current and current['is_playing']:
+                                sp.pause_playback(device_id=DEVICE_ID)
+                                print("Command: Pause")
+                            else:
+                                sp.start_playback(device_id=DEVICE_ID)
+                                print("Command: Resume")
+
+                        elif uri == "NEXT":
+                            sp.next_track(device_id=DEVICE_ID)
+                            print("Command: Next Track")
+
+                        elif uri == "PREV":
+                            # Logic for Previous Track with Context Awareness
+                            current = sp.current_playback()
+                            # Get progress safely (default to 0 if None)
+                            progress = current.get('progress_ms', 0) if current else 0
+
+                            print(f"Current Progress: {progress} ms")
+
+                            # If played for more than 3 seconds (3000 ms)
+                            if progress > 3000:
+                                sp.previous_track(device_id=DEVICE_ID) # 1st: Restart current song
+                                time.sleep(1.0)                        # Wait 1s for Spotify to process
+                                sp.previous_track(device_id=DEVICE_ID) # 2nd: Go to previous song
+                                print("Double Skip Triggered!")
+                            else:
+                                # If less than 3 seconds, just skip back once
+                                sp.previous_track(device_id=DEVICE_ID)
+                                print("Single Skip Triggered!")
 
                     elif action_type == "TRACK":
                         sp.start_playback(device_id=DEVICE_ID, uris=[uri])
-                        log_playback(sp) # Save log
+                        log_playback_history(sp) # Log only track name
 
                     elif action_type == "CONTEXT":
                         sp.start_playback(device_id=DEVICE_ID, context_uri=uri)
-                        log_playback(sp) # Save log
+                        log_playback_history(sp) # Log only track name
 
-                    # Prevent double scanning
+                    # Prevent repetitive scanning
                     sleep(2)
 
                 except spotipy.exceptions.SpotifyException as e:
                     print(f"Spotify Error: {e}")
-                    if e.http_status == 429:
-                        retry_after = int(e.headers.get('Retry-After', 5))
-                        print(f"Rate Limit! Sleeping {retry_after}s...")
-                        sleep(retry_after)
-                    else:
-                        sleep(2)
+                    sleep(2)
                 except Exception as e:
                     print(f"Error: {e}")
                     sleep(2)
             else:
-                print("Unknown Card (Not in Database)")
+                print("Unknown Card")
                 sleep(2)
 
     except KeyboardInterrupt:
