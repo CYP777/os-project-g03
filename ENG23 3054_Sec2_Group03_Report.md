@@ -148,5 +148,4 @@
 
 ## เอกสารอ้างอิง
 
-1.  โรงพยาบาลเซนต์หลุยส์. (2018). *ไข้เลือดออกคืออะไร*. สืบค้นเมื่อ 2 พฤศจิกายน 2561, จาก https://www.saintlouis.or.th/article/show/57e8e49b0478820001000004
-2.  [ชื่อผู้แต่ง]. (ปีที่พิมพ์). *ชื่อบทความ*. สืบค้นเมื่อ [วันที่], จาก [URL]
+1.  talaexe. 2022. *A Modern Day Record Player: RFID Technology & Spotify API*. สืบค้นเมื่อ 18 พฤศจิกายน 2568, จาก https://talaexe.com/moderndayrecordplayer
