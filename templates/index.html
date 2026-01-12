@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotify RFID Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #ffffff;
+            --spotify-green: #1DB954;
+            --danger-color: #e74c3c;
+            --input-bg: #333;
+            --border-color: #444;
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        /* --- 🔥 Grid Layout Setup (25 - 50 - 25) --- */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr; /* Default Mobile: 1 column */
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* Desktop View: Split into 3 columns */
+        @media (min-width: 900px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr 2fr 1fr; /* 25% - 50% - 25% */
+                align-items: start;
+            }
+            /* Order: Stats Left, Player Center, Admin Form Right */
+            .section-stats { order: 1; }
+            .section-player { order: 2; }
+            .section-admin-form { order: 3; }
+        }
+
+        /* --- Common Box Styles --- */
+        .box {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            text-align: center;
+        }
+
+        /* --- Player Styles --- */
+        .vinyl-container {
+            position: relative;
+            width: 250px;
+            height: 250px;
+            margin: 0 auto 20px;
+        }
+        .vinyl {
+            width: 100%; height: 100%;
+            background: #000; border-radius: 50%;
+            background-image: repeating-radial-gradient(circle, #222 0%, #000 4%);
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 0 25px rgba(0,0,0,0.9);
+            transition: transform 2.5s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .album-art {
+            width: 100px; height: 100px;
+            border-radius: 50%; background-size: cover; border: 5px solid #111;
+        }
+        .spinning { animation: rotate 4s linear infinite; }
+        @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+        /* --- Stats Styles --- */
+        .stat-item {
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+            text-align: left;
+            display: flex; align-items: center;
+        }
+        .highlight { font-size: 2em; font-weight: bold; color: white; display: block;}
+        .stat-header { color: var(--spotify-green); text-transform: uppercase; font-size: 0.9em; font-weight: bold; margin-bottom: 15px; text-align: left;}
+
+        /* --- Admin Form Styles --- */
+        .form-stack { display: flex; flex-direction: column; gap: 10px; }
+        input, select {
+            background: var(--input-bg); border: 1px solid var(--border-color);
+            color: white; padding: 10px; border-radius: 6px; width: 100%; box-sizing: border-box;
+        }
+        button {
+            background: var(--spotify-green); color: white; border: none;
+            padding: 12px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%;
+        }
+        button:hover { opacity: 0.9; }
+
+        /* --- Full Width Table (Bottom) --- */
+        .table-section {
+            max-width: 1200px; margin: 30px auto;
+            background: var(--card-bg); padding: 25px; border-radius: 20px;
+        }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9em; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border-color); }
+        th { color: var(--spotify-green); }
+        .btn-sm { padding: 5px 10px; width: auto; font-size: 0.8em; margin: 2px; }
+        .btn-del { background: var(--danger-color); }
+        .btn-edit { background: #3498db; }
+
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-grid">
+
+        <div class="box section-stats">
+            <div class="stat-header">Daily Stats</div>
+            <div style="text-align: left; margin-bottom: 20px;">
+                <span style="color:#aaa">Listening Time:</span><br>
+                <span id="today-mins" class="highlight">0</span> mins
+            </div>
+            <div class="stat-header">Top Tracks</div>
+            <div id="top-tracks-list">Loading...</div>
+        </div>
+
+        <div class="box section-player">
+            <div class="vinyl-container">
+                <div id="vinyl-disk" class="vinyl">
+                    <div id="album-cover" class="album-art" style="background-image: url('https://via.placeholder.com/150');"></div>
+                </div>
+            </div>
+            <h2 id="song-title">Waiting...</h2>
+            <p id="artist-name">Ready to Scan</p>
+        </div>
+
+        <div class="box section-admin-form">
+            <div class="stat-header">Add / Edit Card</div>
+            <div class="form-stack">
+                <input type="number" id="card-id" placeholder="Scan & Enter ID">
+                <select id="card-type">
+                    <option value="TRACK">Track</option>
+                    <option value="CONTEXT">Playlist/Album</option>
+                    <option value="CMD">Command</option>
+                </select>
+                <input type="text" id="card-uri" placeholder="URI or CMD">
+                <input type="text" id="card-name" placeholder="Display Name">
+                <button onclick="saveCard()">Save Card</button>
+                <button onclick="clearForm()" style="background:#444;">Clear</button>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="table-section">
+        <div class="stat-header">Manage All Cards</div>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Type</th>
+                        <th>Name</th>
+                        <th>URI / Value</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="cards-table-body">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // --- JS Logic เดิม (Copy มาแปะได้เลย หรือใช้ของด้านล่างนี้) ---
+        let isPlaying = false;
+
+        function updateSong() {
+            fetch('/current-song').then(res => res.json()).then(data => {
+                const disk = document.getElementById('vinyl-disk');
+                if (data.playing) {
+                    document.getElementById('song-title').innerText = data.title;
+                    document.getElementById('artist-name').innerText = data.artist;
+                    document.getElementById('album-cover').style.backgroundImage = `url(${data.cover})`;
+                    if (!isPlaying) { disk.classList.add('spinning'); isPlaying = true; }
+                } else {
+                    if (isPlaying) { disk.classList.remove('spinning'); isPlaying = false; }
+                }
+            }).catch(()=>{});
+        }
+
+        function updateStats() {
+            fetch('/stats').then(res => res.json()).then(data => {
+                if(!data.error) {
+                    document.getElementById('today-mins').innerText = data.today_minutes;
+                    const list = document.getElementById('top-tracks-list');
+                    if (data.top_tracks.length > 0) {
+                        list.innerHTML = data.top_tracks.map(t =>
+                            `<div class="stat-item">
+                                <div><div style="font-weight:bold;">${t[0]}</div><div style="font-size:0.8em; color:#aaa;">${t[2]} plays</div></div>
+                            </div>`
+                        ).join('');
+                    } else { list.innerHTML = "<small>No history</small>"; }
+                }
+            }).catch(()=>{});
+        }
+
+        function loadCards() {
+            fetch('/api/cards').then(res => res.json()).then(cards => {
+                const tbody = document.getElementById('cards-table-body');
+                tbody.innerHTML = '';
+                cards.sort((a, b) => a.id - b.id);
+                cards.forEach(card => {
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${card.id}</td>
+                            <td><span style="background:#333; padding:2px 6px; border-radius:4px; font-size:0.8em;">${card.type}</span></td>
+                            <td>${card.name}</td>
+                            <td style="font-family:monospace; color:#aaa;">${card.uri}</td>
+                            <td>
+                                <button class="btn-sm btn-edit" onclick="editCard(${card.id}, '${card.type}', '${card.uri}', '${card.name}')">Edit</button>
+                                <button class="btn-sm btn-del" onclick="deleteCard(${card.id})">Del</button>
+                            </td>
+                        </tr>`;
+                });
+            });
+        }
+
+        function saveCard() {
+            const id = document.getElementById('card-id').value;
+            const type = document.getElementById('card-type').value;
+            const uri = document.getElementById('card-uri').value;
+            const name = document.getElementById('card-name').value;
+            if(!id || !uri) { alert("Need ID and URI"); return; }
+            fetch('/api/cards', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id, type: type, uri: uri, name: name })
+            }).then(() => { loadCards(); clearForm(); });
+        }
+
+        function deleteCard(id) {
+            if(confirm('Delete ID: ' + id + '?')) {
+                fetch(`/api/cards/${id}`, { method: 'DELETE' }).then(() => loadCards());
+            }
+        }
+
+        function editCard(id, type, uri, name) {
+            document.getElementById('card-id').value = id;
+            document.getElementById('card-type').value = type;
+            document.getElementById('card-uri').value = uri;
+            document.getElementById('card-name').value = name;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function clearForm() {
+            document.getElementById('card-id').value = '';
+            document.getElementById('card-uri').value = '';
+            document.getElementById('card-name').value = '';
+        }
+
+        setInterval(updateSong, 2000);
+        setInterval(updateStats, 10000);
+        updateSong(); updateStats(); loadCards();
+    </script>
+</body>
+</html>
